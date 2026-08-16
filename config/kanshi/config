@@ -1,0 +1,9 @@
+profile signle {
+    output eDP-1 enable mode 1920x1080 position 0,0
+}
+
+
+profile dual {
+    output eDP-1 enable position 0,0
+    output HDMI-A-1 enable mode 1920x1080 position 1920,0
+}
