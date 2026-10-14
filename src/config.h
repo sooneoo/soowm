@@ -23,13 +23,11 @@ static const float rootcolor[]             = COLOR(0x222222ff);
 /* This conforms to the xdg-protocol. Set the alpha to zero to restore the old behavior */
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f}; /* You can also use glsl colors */
 static uint32_t colors[][3] = {
-	/*               fg          bg          border   */
-	[SchemeNorm] = { 0xa9b1d6ff, 0x1a1b26ff, 0x1a1b26ff },
-	[SchemeSel]  = { 0x1a1b26ff, 0xff9800ff, 0x1a1b26ff },
-	[SchemeUrg]  = { 0xffffffff, 0xf7768eff, 0xf7768eff },
+	/*                     fg          bg          border   */
+	[SchemeNorm] = { 0x999999ff, 0x1e1e1eff, 0x2c2c2eff },
+    [SchemeSel]  = { 0xffffffff, 0x2c2c2cff, 0x3c3c3cff },
+	[SchemeUrg]  = { 0xffffffff, 0xff453aff, 0xff453aff },
 };
-
-
 
 
 /* tagging */
@@ -64,7 +62,7 @@ static const MonitorRule monrules[] = {
    /* name        mfact  nmaster scale layout       rotate/reflect                x    y
     * example of a HiDPI laptop monitor:
     { "eDP-1",    0.5f,  1,      2,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 }, */
-	{ NULL,       0.55f, 1,      0.9f,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
+	{ NULL,       0.55f, 1,      1.1f,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
 	/* default monitor rule: can be changed but cannot be eliminated; at least one monitor rule must exist */
 };
 
