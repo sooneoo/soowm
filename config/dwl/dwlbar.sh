@@ -5,9 +5,9 @@ do
     # 1. Datum a čas: W{týden} {dd.mm.yyyy} {HH:MM:SS}
     clock="W$(date "+%V %d.%m.%Y %H:%M:%S")"
 
-    # 2. Teplota CPU (°C) z hwmon2 (zarovnáno na 2 místa)
-    if [ -f /sys/class/hwmon/hwmon2/temp1_input ]; then
-        temp_val=$(($(cat /sys/class/hwmon/hwmon2/temp1_input) / 1000))
+#    2. Teplota CPU (°C) z hwmon2 (zarovnáno na 2 místa)
+    if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+        temp_val=$(($(cat /sys/class/thermal/thermal_zone0/temp) / 1000))
         if [ "$temp_val" -ge 80 ]; then
             temp_icon=""
         elif [ "$temp_val" -ge 50 ]; then
@@ -20,9 +20,7 @@ do
     else
         temperature=" N/A"
     fi
-
-    # 3. Využití CPU (%) (zarovnáno na 3 místa)
-    # 3. Využití CPU (%) – přesné okamžité vytížení z /proc/stat
+    
 	# 3. Využití CPU (%) – přesný výpočet rozdílu oproti předchozí sekundě
     if [ -f /tmp/.cpu_usage_prev ]; then
         read -r prev_idle prev_total < /tmp/.cpu_usage_prev
@@ -177,7 +175,7 @@ do
     fi
 
     # Vypisování do dwl lišty
-    echo " $temperature $cpu $memory $network $bluetooth $audio $backlight $battery $clock"
+    echo " $temperature  $cpu  $memory  $network  $bluetooth  $audio  $backlight  $battery  $clock"
 
     sleep 1
 done
