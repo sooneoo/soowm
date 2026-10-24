@@ -1,181 +1,241 @@
+
 #!/bin/sh
 
-while :
-do
-    # 1. Datum a čas: W{týden} {dd.mm.yyyy} {HH:MM:SS}
-    clock="W$(date "+%V %d.%m.%Y %H:%M:%S")"
+# Pomalejsi metriky se ctou na pozadi.
+# Hlavni smycka nikdy neceka na Bluetooth, GPU ani D-Bus.
 
-#    2. Teplota CPU (°C) z hwmon2 (zarovnáno na 2 místa)
-    if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-        temp_val=$(($(cat /sys/class/thermal/thermal_zone0/temp) / 1000))
-        if [ "$temp_val" -ge 80 ]; then
-            temp_icon=""
-        elif [ "$temp_val" -ge 50 ]; then
-            temp_icon=""
-        else
-            temp_icon=""
+CACHE_DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/dwl-status.XXXXXXXX") || exit 1
+
+cleanup() {
+    trap - EXIT HUP INT TERM
+    [ -n "${worker_pid:-}" ] && kill "$worker_pid" 2>/dev/null
+    rm -rf "$CACHE_DIR"
+}
+
+trap 'exit 0' HUP INT TERM
+trap cleanup EXIT
+
+# Bezpecny zapis hodnot do cache
+save_cache() {
+    printf '%s\n' "$2" > "$CACHE_DIR/$1.tmp"
+    mv -f "$CACHE_DIR/$1.tmp" "$CACHE_DIR/$1"
+}
+
+# Cteni posledni hodnoty
+read_cache() {
+    if [ -r "$CACHE_DIR/$1" ]; then
+        cat "$CACHE_DIR/$1"
+    else
+        printf '%s' "$2"
+    fi
+}
+
+# Pomalé monitorovani na pozadi
+monitor_slow() {
+    while :; do
+        # GPU NVIDIA
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            gpu_temp=$(timeout -k 0.2s 2s \
+                nvidia-smi \
+                --query-gpu=temperature.gpu \
+                --format=csv,noheader,nounits \
+                2>/dev/null | head -n 1)
+
+            case "$gpu_temp" in
+                ''|*[!0-9]*)
+                    # Neuspesne mereni:
+                    # ponechame posledni znamou hodnotu
+                    ;;
+                *)
+                    gpu="󰢮 ${gpu_temp}°C"
+                    save_cache gpu "$gpu"
+                    ;;
+            esac
         fi
-        temp_formatted=$(printf "%2d" "$temp_val")
-        temperature="$temp_icon ${temp_formatted}°C"
-    else
-        temperature=" N/A"
-    fi
-    
-	# 3. Využití CPU (%) – přesný výpočet rozdílu oproti předchozí sekundě
-    if [ -f /tmp/.cpu_usage_prev ]; then
-        read -r prev_idle prev_total < /tmp/.cpu_usage_prev
-    else
-        prev_idle=0
-        prev_total=0
-    fi
 
-    # Načtení aktuálních hodnot CPU z /proc/stat
-    cpu_line=$(grep '^cpu ' /proc/stat)
-    idle=$(echo "$cpu_line" | awk '{print $5 + $6}')
-    total=$(echo "$cpu_line" | awk '{print $2+$3+$4+$5+$6+$7+$8}')
+        # Bluetooth
+        bt=" N/A"
+        if command -v bluetoothctl >/dev/null 2>&1; then
+            bt_status=$(timeout -k 0.2s 1s \
+                bluetoothctl show 2>/dev/null)
 
-    # Výpočet rozdílu oproti předchozímu měření
-    diff_idle=$((idle - prev_idle))
-    diff_total=$((total - prev_total))
+            case "$bt_status" in
+                *"Powered: yes"*)
+                    bt=" on"
 
-    if [ "$diff_total" -gt 0 ]; then
-        cpu_val=$(( (100 * (diff_total - diff_idle)) / diff_total ))
-    else
-        cpu_val=0
-    fi
+                    bt_devices=$(timeout -k 0.2s 1s \
+                        bluetoothctl devices Connected 2>/dev/null)
 
-    # Uložení aktuálních hodnot pro příští iteraci
-    echo "$idle $total" > /tmp/.cpu_usage_prev
+                    bt_name=$(printf '%s\n' "$bt_devices" |
+                        sed -n '1s/^Device [^ ]* //p')
 
-    cpu_formatted=$(printf "%3d" "$cpu_val")
-    cpu=" ${cpu_formatted}%"
+                    [ -n "$bt_name" ] && bt=" $bt_name"
+                    ;;
+                *"Powered: no"*) bt=" off" ;;
+            esac
+        fi
+        save_cache bluetooth "$bt"
 
+        # Sit
+        net="󰤮"
+        net_dev=$(timeout -k 0.2s 1s \
+            ip route show default 2>/dev/null |
+            awk 'NR == 1 {print $5}')
 
-    # 4. Využití paměti RAM (%) (zarovnáno na 3 místa)
-    memory_usage=$(free | awk '/Mem:/ {printf("%.0f", $3/$2 * 100)}')
-    memory_formatted=$(printf "%3d" "$memory_usage")
-    memory=" ${memory_formatted}%"
+        if [ -n "$net_dev" ]; then
+            if [ -d "/sys/class/net/$net_dev/wireless" ] ||
+               [ -d "/sys/class/net/$net_dev/phy80211" ]; then
 
-    # 5. Síť (Wi-Fi s SSID / Ethernet pouze ikona / Nepřipojeno)
-    net_dev=$(ip route | grep default | awk '{print $5}' | head -n1)
+                ssid=$(timeout -k 0.2s 1s \
+                    nmcli -g GENERAL.CONNECTION \
+                    device show "$net_dev" 2>/dev/null)
 
-    if [ -n "$net_dev" ]; then
-        case "$net_dev" in
-            w*) is_wifi=1 ;;
-            *)
-                if [ -d "/sys/class/net/$net_dev/wireless" ] || [ -d "/sys/class/net/$net_dev/phy80211" ]; then
-                    is_wifi=1
+                if [ -n "$ssid" ] && [ "$ssid" != "--" ]; then
+                    net="  $ssid"
                 else
-                    is_wifi=0
+                    net="  Wi-Fi"
                 fi
-                ;;
-        esac
-
-        if [ "$is_wifi" -eq 1 ]; then
-            ssid=$(nmcli -t -f GENERAL.CONNECTION dev show "$net_dev" 2>/dev/null | cut -d: -f2)
-            [ -z "$ssid" ] && ssid=$(nmcli -t -f active,ssid dev wifi 2>/dev/null | grep -E '^(yes|ano):' | cut -d: -f2)
-            [ -z "$ssid" ] && ssid=$(iwctl station "$net_dev" show 2>/dev/null | awk -F'  +' '/Connected network/ {print $2}' | xargs)
-            [ -z "$ssid" ] && ssid=$(wpa_cli -i "$net_dev" status 2>/dev/null | awk -F'=' '/^ssid=/ {print $2}')
-            [ -z "$ssid" ] && ssid=$(iw dev "$net_dev" info 2>/dev/null | awk '/ssid/ {print $2}')
-            [ -z "$ssid" ] && ssid=$(iwgetid -r 2>/dev/null)
-
-            if [ -n "$ssid" ]; then
-                network="  $ssid"
             else
-                network="  Wi-Fi"
+                net=""
             fi
-        else
-            network=""
         fi
-    else
-        network="󰤮"
-    fi
+        save_cache network "$net"
 
-    # 6. Bluetooth
-    if command -v bluetoothctl >/dev/null 2>&1; then
-        if bluetoothctl show | grep -q "Powered: yes"; then
-            bt_dev=$(bluetoothctl info | grep "Name:" | cut -d ' ' -f2-)
-            if [ -n "$bt_dev" ]; then
-                bluetooth=" $bt_dev"
-            else
-                bluetooth=" on"
-            fi
-        else
-            bluetooth=" off"
-        fi
-    else
-        bluetooth=" N/A"
-    fi
-
-    # 7. Zvuk a mikrofon (PipeWire přes wpctl) (zarovnáno na 3 místa)
-    wpctl_out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
-    if [ -z "$wpctl_out" ]; then
+        # Zvuk a mikrofon
         audio=" N/A"
-    else
-        vol_float=$(echo "$wpctl_out" | awk '{print $2}')
-        audio_vol=$(awk -v v="$vol_float" 'BEGIN {printf "%.0f", v * 100}')
+        wp_out=$(timeout -k 0.2s 1s \
+            wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
 
-        if echo "$wpctl_out" | grep -q "MUTED"; then
-            audio=" Mute "
-        else
-            if [ "$audio_vol" -ge 66 ]; then
-                audio_icon=""
-            elif [ "$audio_vol" -ge 33 ]; then
-                audio_icon=""
-            else
-                audio_icon=""
-            fi
+        if [ -n "$wp_out" ]; then
+            vol=$(printf '%s\n' "$wp_out" |
+                awk '{printf "%.0f", $2 * 100}')
 
-            mic_out=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null)
-            if echo "$mic_out" | grep -q "MUTED"; then
-                mic_icon=""
-            else
-                mic_icon=""
-            fi
+            case "$wp_out" in
+                *MUTED*) audio=" Mute" ;;
+                *)
+                    if [ "$vol" -ge 66 ]; then ico=""
+                    elif [ "$vol" -ge 33 ]; then ico=""
+                    else ico=""
+                    fi
 
-            audio_formatted=$(printf "%3d" "$audio_vol")
-            audio="$audio_icon ${audio_formatted}% $mic_icon"
+                    mic=$(timeout -k 0.2s 1s \
+                        wpctl get-volume @DEFAULT_AUDIO_SOURCE@ \
+                        2>/dev/null)
+
+                    case "$mic" in
+                        *MUTED*) mic_ico="" ;;
+                        *) mic_ico="" ;;
+                    esac
+
+                    audio=$(printf '%s %3d%% %s' \
+                        "$ico" "$vol" "$mic_ico")
+                    ;;
+            esac
         fi
-    fi
+        save_cache audio "$audio"
 
-    # 8. Podsvícení displeje (Backlight) (zarovnáno na 3 místa)
-    if command -v brightnessctl >/dev/null 2>&1; then
-        bright_val=$(brightnessctl -m 2>/dev/null | cut -d',' -f4 | tr -d '%')
-        
-        if [ -n "$bright_val" ]; then
-            bright_formatted=$(printf "%3d" "$bright_val")
-            backlight="● ${bright_formatted}%"
-        else
-            backlight=""
-        fi
-    else
+        # Podsviceni
         backlight=""
-    fi
+        if command -v brightnessctl >/dev/null 2>&1; then
+            bright=$(timeout -k 0.2s 1s \
+                brightnessctl -m 2>/dev/null |
+                cut -d',' -f4 | tr -d '%')
 
-    # 9. Baterie (zarovnáno na 3 místa)
-    if [ -d /sys/class/power_supply/BAT0 ]; then
-        bat_capacity=$(cat /sys/class/power_supply/BAT0/capacity)
-        bat_status=$(cat /sys/class/power_supply/BAT0/status)
-
-        if [ "$bat_status" = "Charging" ]; then
-            bat_icon=""
-        elif [ "$bat_status" = "Full" ]; then
-            bat_icon=""
-        else
-            if [ "$bat_capacity" -ge 80 ]; then bat_icon=""
-            elif [ "$bat_capacity" -ge 60 ]; then bat_icon=""
-            elif [ "$bat_capacity" -ge 40 ]; then bat_icon=""
-            elif [ "$bat_capacity" -ge 20 ]; then bat_icon=""
-            else bat_icon=""; fi
+            case "$bright" in
+                ''|*[!0-9]*) ;;
+                *) backlight=$(printf '● %3d%%' "$bright") ;;
+            esac
         fi
-        bat_formatted=$(printf "%3d" "$bat_capacity")
-        battery="$bat_icon ${bat_formatted}%"
-    else
-        battery=""
+        save_cache backlight "$backlight"
+
+        sleep 5
+    done
+}
+
+monitor_slow &
+worker_pid=$!
+
+# Hodnoty CPU pro vypocet vytizeni
+prev_idle=0
+prev_total=0
+
+# Hlavni rychla smycka
+while :; do
+
+    # CPU teplota
+    temperature=" N/A"
+
+    if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+        read -r raw_temp < /sys/class/thermal/thermal_zone0/temp
+        temp=$((raw_temp / 1000))
+
+        if [ "$temp" -ge 80 ]; then ico=""
+        elif [ "$temp" -ge 50 ]; then ico=""
+        else ico=""
+        fi
+
+        temperature=$(printf '%s %2d°C' "$ico" "$temp")
     fi
 
-    # Vypisování do dwl lišty
-    echo " $temperature  $cpu  $memory  $network  $bluetooth  $audio  $backlight  $battery  $clock"
+    # CPU vytizeni
+    read -r _ user nice system idle iowait irq softirq \
+        _ < /proc/stat
+
+    idle_now=$((idle + iowait))
+    total_now=$((user + nice + system + idle + iowait + irq + softirq))
+
+    diff_idle=$((idle_now - prev_idle))
+    diff_total=$((total_now - prev_total))
+
+    cpu_val=0
+    if [ "$prev_total" -gt 0 ] && [ "$diff_total" -gt 0 ]; then
+        cpu_val=$((100 * (diff_total - diff_idle) / diff_total))
+    fi
+
+    prev_idle=$idle_now
+    prev_total=$total_now
+
+    cpu=$(printf ' %3d%%' "$cpu_val")
+
+    # RAM
+    memory_usage=$(free | awk '/Mem:/ {
+        printf "%.0f", $3 / $2 * 100
+    }')
+    memory=$(printf ' %3d%%' "$memory_usage")
+
+    # Baterie
+    battery=""
+    if [ -r /sys/class/power_supply/BAT0/capacity ]; then
+        read -r cap < /sys/class/power_supply/BAT0/capacity
+        read -r state < /sys/class/power_supply/BAT0/status
+
+        if [ "$state" = "Charging" ]; then ico=""
+        elif [ "$state" = "Full" ]; then ico=""
+        elif [ "$cap" -ge 80 ]; then ico=""
+        elif [ "$cap" -ge 60 ]; then ico=""
+        elif [ "$cap" -ge 40 ]; then ico=""
+        elif [ "$cap" -ge 20 ]; then ico=""
+        else ico=""
+        fi
+
+        battery=$(printf '%s %3d%%' "$ico" "$cap")
+    fi
+
+    # Nacteni cache bez cekani na sondy
+    gpu=$(read_cache gpu "")
+    network=$(read_cache network "󰤮")
+    bluetooth=$(read_cache bluetooth " N/A")
+    audio=$(read_cache audio " N/A")
+    backlight=$(read_cache backlight "")
+
+    # Cas nacitame az bezprostredne pred vykreslenim
+    clock="W$(date '+%V %d.%m.%Y %H:%M:%S')"
+
+    printf ' %s  %s  %s  %s  %s  %s  %s  %s  %s  %s\n' \
+        "$temperature" "$gpu" "$cpu" "$memory" \
+        "$network" "$bluetooth" "$audio" \
+        "$backlight" "$battery" "$clock"
 
     sleep 1
 done
+
